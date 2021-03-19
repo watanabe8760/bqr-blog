@@ -1,0 +1,138 @@
+---
+title: "Google BigQuery with R"
+output: html_document
+---
+
+`dplyr` is one of the most efficient packages to manipulate table data in the R language environment. It provides a consistent set of verbs that help us solve the most common data manipulation challenges. In this post I’d like to share how we can utilize the grammar to manipulate data stored in Google BigQuery without writing any SQL.
+
+## Motivation - Why I’m writing this post
+- I could not find any comprehensive resource that explains how to use the `bigrquery` package.
+- The flow of the coding matches the flow of thinking.
+- The expressions are very concise.
+- After writing this post, I noticed that the most of things written here are also applicable to other DBs.
+
+
+## Data
+The sample data used in this tutorial is Iowa Liquor Product Sales dataset. The following csv files are downloaded from [here](https://data.world/classrooms/guide-to-data-analysis-with-sql-and-datadotworld).
+
+- products.csv
+- stores.csv
+- stores_convenience.csv
+- sales.csv
+
+Before uploading csv files to BigQuery, I had to make some modifications.
+
+- Remove newline characters (\n).
+- Double-quote string columns.
+
+Then datasets and tables are created from [BigQuery Web UI](https://console.cloud.google.com/bigquery). sales.csv is a little less than 500 MB so that I had to upload the file to GCS to create the table.
+
+The datasets and tables in BigQuery Web UI look like this.
+[BigQuery screen shot](bq_screen_shot.png)
+
+
+## Packanges
+```{r}
+library(bigrquery)
+library(dplyr)
+```
+
+## Connection
+You can create a connection to BigQuery using `dbConnect`. There are two ways to establish the connection depending on how you specify the dataset name.
+
+```{r}
+# connection pattern 1
+bq_con <-
+  dbConnect(drv = bigquery(),
+            project = "iowa-liquor-product-sales")
+
+bq_con %>% tbl("transaction.sales")
+```
+
+```{r}
+# connection pattern 2
+bq_con <-
+  dbConnect(drv = bigquery(),
+            project = "iowa-liquor-product-sales",
+            dataset = "transaction")
+
+bq_con %>% tbl("sales")
+```
+
+At the first glance, the pattern 2 looks more concise because you don’t have to repeat the dataset name when you access the same table several times. But there is a catch. If you specify the dataset name in `dbConnect`, you cannot use the same connection to access tables in different datasets. Generally speaking, accessing tables in different datasets is very common (e.g. Join two tables in different datasets) so that the pattern 1 is more flexible and convenient 
+
+I will use the pattern 1 all through this post.
+
+## Basics
+Once I have the connection to BigQuery, I can read and manipulate all datasets and tables in the project as if they are `data.frame` by using `dplyr` verbs.
+
+```{r}
+# Summarize the sales record of May 2014 by category.
+sales_summary_in_may <-
+  bq_con %>%
+  tbl("transaction.sales") %>%
+  select(date, btl_price, state_btl_cost, category_name, bottle_qty, total) %>%
+  filter(date >= "2014-05-01",
+         date <= "2014-05-31") %>%
+  mutate(gross_profit = btl_price - state_btl_cost) %>%
+  group_by(category_name) %>%
+  summarise(n_bottles_sold = sum(bottle_qty, na.rm = TRUE),
+            revenue = sum(total, na.rm = TRUE),
+            gross_profit = sum(gross_profit, na.rm = TRUE)) %>%
+  arrange(desc(gross_profit))
+```
+
+When this code is executed, what's stored in `sales_summary_in_may` is just a BigQuery object, not the actual data retrieved by the query. To download the data to the local R environment, `collect()` has to be called explicitly. Then the result of query becomes a local `data.frame`.
+
+```{r}
+sales_summary_in_may_df <-
+  sales_summary_in_may %>%
+  collect()
+```
+
+If you intend to download the data from the beginning, you can just add `collect()` at the end of piping. This way the query always materializes a local `data.frame` when it's executed.
+
+```{r}
+sales_summary_in_may_df <-
+  bq_con %>%
+  tbl("transaction.sales") %>%
+  ... %>%
+  collect()
+```
+
+Also you can check what SQL is actually executed in BigQuery using `dbplyr::sql_render()`. It is an automatic conversion and not so clean (nesting a lot) though, conversion to SQL is very useful when you want to complete all transactions in the server side (e.g. The data is too big to download to the local environment.) 
+
+```{r}
+sales_summary_in_may %>%
+  dbplyr::sql_render()
+```
+
+
+- select
+- filter
+- mutate
+- group_by + summarise
+- arrange
+
+## Create a table and insert data from local
+
+
+## Convert to SQL
+
+
+## Create a table and insert data in GCP
+
+
+## Use SQL standard functions
+
+
+## When SQL standard function do not follow R syntax
+
+
+## Limitation
+- Per-row processing (furrr, map operation)
+- Pivot (pivot_wider, pivot_longer)
+- Download & upload capacity
+
+
+## Appendix: Hierarchy of libraries
