@@ -3,13 +3,15 @@ title: "Google BigQuery with R"
 output: html_document
 ---
 
-`dplyr` is one of the most efficient packages to manipulate table data in the R language environment. It provides a consistent set of verbs that help us solve the most common data manipulation challenges. In this post I’d like to share how we can utilize the grammar to manipulate data stored in Google BigQuery without writing any SQL.
+`dplyr` is one of the most efficient packages to manipulate table data in the R language environment. It provides a consistent set of verbs that help us solve the most common data manipulation challenges. In this post I’d like to share how we can utilize the grammar of `dplyr` to manipulate data stored in Google BigQuery without writing any SQL.
 
-## Motivation - Why I’m writing this post
-- I could not find any comprehensive resource that explains how to use the `bigrquery` package.
+## Target audience
+I expect readers already know the basics of `dplyr` and BigQuery thus will skip the preliminary. When I started to use `dplyr` with BigQuery, I was already familiar with `dplyr` but still somehow struggled to get used to it because I couldn't find any comprehensive resource online. So my motivation here is to provide a practical guideline.
+
+## Memo, these can be inserted somewhere
 - The flow of the coding matches the flow of thinking.
 - The expressions are very concise.
-- After writing this post, I noticed that the most of things written here are also applicable to other DBs.
+- After writing this post, I noticed that the most of things written here are also applicable to other databases.
 
 
 ## Data
@@ -37,8 +39,11 @@ library(bigrquery)
 library(dplyr)
 ```
 
+TODO: confusion between bigrquery and dbplyr
+
+
 ## Connection
-You can create a connection to BigQuery using `dbConnect`. There are two ways to establish the connection depending on how you specify the dataset name.
+You can create a connection to BigQuery using `bigrquery::dbConnect`. There are two ways to establish the connection depending on how you specify the dataset name. `dplyr::tbl` gives you a reference to the table specified.
 
 ```{r}
 # connection pattern 1
@@ -59,16 +64,16 @@ bq_con <-
 bq_con %>% tbl("sales")
 ```
 
-At the first glance, the pattern 2 looks more concise because you don’t have to repeat the dataset name when you access the same table several times. But there is a catch. If you specify the dataset name in `dbConnect`, you cannot use the same connection to access tables in different datasets. Generally speaking, accessing tables in different datasets is very common (e.g. Join two tables in different datasets) so that the pattern 1 is more flexible and convenient 
+At the first glance, the pattern 2 looks more concise because you don’t have to repeat the dataset name when you access the same table several times. But there is a catch. If you specify the dataset name in `dbConnect`, you cannot use the same connection to access tables in different datasets. Generally speaking, accessing tables in different datasets is very common (e.g. Join two tables in different datasets) so that the pattern 1 is more flexible and convenient.
 
-I will use the pattern 1 all through this post.
+I will use a connection created by the pattern 1 all through this post.
 
-## Basics
-Once I have the connection to BigQuery, I can read and manipulate all datasets and tables in the project as if they are `data.frame` by using `dplyr` verbs.
+## Write a query
+Once you have the connection to BigQuery, you can read and manipulate all datasets and tables in the project as if they are `data.frame` by using `dplyr` verbs.
 
 ```{r}
 # Summarize the sales record of May 2014 by category.
-sales_summary_in_may <-
+sales_in_may_query <-
   bq_con %>%
   tbl("transaction.sales") %>%
   select(date, btl_price, state_btl_cost, category_name, bottle_qty, total) %>%
@@ -82,45 +87,87 @@ sales_summary_in_may <-
   arrange(desc(gross_profit))
 ```
 
-When this code is executed, what's stored in `sales_summary_in_may` is just a BigQuery object, not the actual data retrieved by the query. To download the data to the local R environment, `collect()` has to be called explicitly. Then the result of query becomes a local `data.frame`.
+When this code is executed, what's stored in `sales_in_may` is just a BigQuery object, not the actual data retrieved by the query. To download the data to the local R environment, `collect()` has to be called explicitly. Then the result of query becomes a local `data.frame`. All the verbs before `collect()` are executed in the BigQuery side as it is translated into SQL automatically.
 
 ```{r}
-sales_summary_in_may_df <-
-  sales_summary_in_may %>%
+sales_in_may_df <-
+  sales_in_may_query %>%
   collect()
+
+sales_in_may_df
 ```
 
-If you intend to download the data from the beginning, you can just add `collect()` at the end of piping. This way the query always materializes a local `data.frame` when it's executed.
+If you intend to download the data from the beginning, you can just add `collect()` at the end of piping. This way the query immediately materializes a local `data.frame` without keeping the BigQuery object in the local environment.
 
 ```{r}
-sales_summary_in_may_df <-
+sales_in_may_df <-
   bq_con %>%
   tbl("transaction.sales") %>%
   ... %>%
   collect()
 ```
 
-Also you can check what SQL is actually executed in BigQuery using `dbplyr::sql_render()`. It is an automatic conversion and not so clean (nesting a lot) though, conversion to SQL is very useful when you want to complete all transactions in the server side (e.g. The data is too big to download to the local environment.) 
+Note, before downloading data from BigQuery to the local environment it is better to process data in the BigQuery side as much as possible. Two reasons.
+
+1. BigQuery is very fast to perform any data manipulation and the processing itself doesn't cost you. (It charges you by the amount of data scanned by the query.)
+2. If you download a big chunk of data, it might take a long time. If it's too big, it can fail after you wait for a while.
+
+If you want to check what SQL is actually executed, you can see it by `dbplyr::sql_render()`. `dbplyr` package is the database backend for `dplyr` which translates all the verbs of `dplyr` into SQL. This package is implicitly used behind `bigrquery`.
 
 ```{r}
-sales_summary_in_may %>%
+sales_in_may_query %>%
   dbplyr::sql_render()
 ```
 
-
-- select
-- filter
-- mutate
-- group_by + summarise
-- arrange
-
-## Create a table and insert data from local
+The SQL is nested and not clean, but you can get the gist of it. 
 
 
-## Convert to SQL
+## Create dataset and table
+
+It's as simple as follows.
+
+```{r}
+bq_dataset(project = "iowa-liquor-product-sales",
+           dataset = "summary") %>%
+  bq_dataset_create()
+```
+
+```{r}
+bq_table(project = "iowa-liquor-product-sales",
+         dataset = "summary",
+         table   = "sales_in_may") %>%
+  bq_table_create(sales_in_may_df)
+```
+
+For table creation, you need to specify the field definition. The easiest way to do this is to pass a `data.frame` that you are planning to upload. `bigrquery::bq_table_create()` automatically converts it to the field definition. If you don't have any target `data.frame`, you can manually specify by `bq_field()` and `bq_fields()`.
+
+Note, you don't need the connection when you create dataset and table. All you have to do is to specify the names by characters. 
 
 
-## Create a table and insert data in GCP
+## Upload data
+When you have a local `data.frame` that you want to store in BigQuery, you can do it with `bigrquery::bq_table_upload()`. 
+
+```{r}
+bq_table(project = "iowa-liquor-product-sales",
+         dataset = "summary",
+         table   = "sales_in_may") %>%
+  bq_table_upload(sales_in_may_df)
+```
+
+Table creation and uploading a local data.frame to the table can be done in one line.
+
+```{r}
+bq_table(project = "iowa-liquor-product-sales",
+         dataset = "summary",
+         table   = "sales_in_may") %>%
+  bq_table_create(sales_in_may_df) %>%
+  bq_table_upload(sales_in_may_df)
+```
+
+
+
+TODO: Complete in GCP
+
 
 
 ## Use SQL standard functions
@@ -135,4 +182,4 @@ sales_summary_in_may %>%
 - Download & upload capacity
 
 
-## Appendix: Hierarchy of libraries
+
